@@ -1,18 +1,20 @@
+from flask import Flask, request
 import os
 import re
 import sqlite3
 import threading
-from flask import Flask, request
 import telebot
 
+# 1. LA VARIABLE GLOBAL 'app' DEBE SER LO PRIMERO QUE DETECTE VERCEL
+app = Flask(__name__)
+
+# ================= CONFIGURACIÓN =================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 CONTACTO_ADMIN = "@HVN94"
 TIEMPO_AUTO_ELIMINAR = 60
 ITEMS_POR_PAGINA = 8
 
-# Instancia obligatoria expuesta para Vercel
-app = Flask(__name__)
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 
 ultimo_pack_id = None
