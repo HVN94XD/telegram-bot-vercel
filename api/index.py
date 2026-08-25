@@ -1,5 +1,5 @@
-import os
-import re
+os = __import__('os')
+re = __import__('re')
 from flask import Flask, request
 import telebot
 from telebot import types
@@ -82,7 +82,7 @@ def obtener_detalles_pack(pack_id):
     res_p = supabase.table("packs").select("titulo, descripcion, fecha").eq("id", pack_id).execute()
     if not res_p.data:
         return None
-    pack = (res_p.data[0]["titulo"], res_p.data[0]["descripcion"], res_p.data[0]["fecha"])
+    pack = (res_p.data[0]["titulo"], res_p.data[0]["descripcion"], res_p.data[0].get("fecha"))
     res_a = supabase.table("pack_archivos").select("file_id, nombre_archivo, tipo").eq("pack_id", pack_id).execute()
     archivos = [(row["file_id"], row["nombre_archivo"], row["tipo"]) for row in res_a.data]
     return pack, archivos
@@ -193,8 +193,9 @@ def callbacks(call):
 @app.route('/', methods=['POST', 'GET'])
 def webhook():
     if request.method == 'POST':
-        json_data = request.get_json(force=True)
-        update = telebot.types.Update.de_json(json_data)
-        bot.process_new_updates([update])
+        json_data = request.get_json(silent=True)
+        if json_data:
+            update = telebot.types.Update.de_json(json_data)
+            bot.process_new_updates([update])
         return 'OK', 200
     return 'Bot activo', 200
