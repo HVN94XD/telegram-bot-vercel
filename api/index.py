@@ -923,9 +923,8 @@ def callbacks(call):
 # WEBHOOK VERCEL
 # =========================================================
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/api/index", methods=["GET", "POST"])
 def webhook():
-
     if request.method == "GET":
         return "Bot activo correctamente en Vercel", 200
 
