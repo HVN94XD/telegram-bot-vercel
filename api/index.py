@@ -16,14 +16,14 @@ TIEMPO_AUTO_ELIMINAR = 30  # Reducido a 30 segundos
 ITEMS_POR_PAGINA = 8
 
 # URL o file_id de tu imagen de bienvenida
-WELCOME_IMAGE_URL = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1000"
+WELCOME_IMAGE_URL = "https://6a8d8d79aeeb5e92d6b686c4.imgix.net/sandbox/magnific_quiero-un-fondo-de-1000-x_xSJ0dLcjfW.jpg"
 
 BIOGRAFIA_TEXTO = (
-    "👑 **BIENVENIDO AL PANEL OFICIAL HVN94**\n"
+    "👑 **PANEL BUSQUEDA OFICIAL HVN94**\n"
     "━━━━━━━━━━━━━━━━━━━━━━\n"
-    "🔹 **Owner & Dev:** @HVN94\n"
-    "🔹 **Acceso:** Exclusivo para miembros del grupo oficial.\n"
-    "🔹 **Sistema:** Auto-indexación y entrega temporal de configs.\n\n"
+    "🔹 **Admin:** @HVN94\n"
+    "🔹 **Acceso:** Solo Exclusivo para miembros del grupo oficial.\n"
+    "🔹 **Sistema:** Auto entrega temporal de configs.\n\n"
     "⚡ _Selecciona una opción del menú o busca con `/buscar [nombre]`._\n"
     f"⏱ _Este mensaje y las entregas se autodestruyen en {TIEMPO_AUTO_ELIMINAR}s._"
 )
