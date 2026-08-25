@@ -1,7 +1,7 @@
-from flask import Flask, request
 import os
-import urllib.request
 import json
+import urllib.request
+from flask import Flask, request
 
 app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -15,12 +15,11 @@ def webhook():
                 chat_id = data["message"]["chat"]["id"]
                 text = data["message"].get("text", "")
                 
-                # Si escriben cualquier cosa, respondemos de vuelta
                 if BOT_TOKEN:
                     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
                     payload = {
                         "chat_id": chat_id,
-                        "text": f"¡Hola! Recibí tu mensaje: {text}"
+                        "text": f"¡Hola! Mensaje recibido correctamente: {text}"
                     }
                     req = urllib.request.Request(
                         url, 
@@ -29,8 +28,8 @@ def webhook():
                     )
                     urllib.request.urlopen(req)
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Error procesando mensaje: {e}")
             
         return "OK", 200
         
-    return "El bot está funcionando correctamente", 200
+    return "El bot está funcionando correctamente en Vercel", 200
