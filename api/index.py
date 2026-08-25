@@ -4,7 +4,6 @@ import sqlite3
 import threading
 from flask import Flask, request
 import telebot
-from telemetry import types if 'telemetry' in globals() else telebot.types
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
@@ -12,14 +11,15 @@ CONTACTO_ADMIN = "@HVN94"
 TIEMPO_AUTO_ELIMINAR = 60
 ITEMS_POR_PAGINA = 8
 
-bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
+# Instancia obligatoria expuesta para Vercel
 app = Flask(__name__)
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 
 ultimo_pack_id = None
 lock_db = threading.Lock()
 GRUPOS_REGISTRADOS = set()
 
-# --- BASE DE DATOS LOCAL (SQLite en /tmp para entornos serverless) ---
+# Base de datos SQLite temporal segura para Serverless
 DB_PATH = "/tmp/archivos.db"
 
 def init_db():
@@ -208,11 +208,11 @@ def extraer_info_archivo(message):
     return None, None, None
 
 def teclado_principal(es_admin=False):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
-        types.KeyboardButton("📁 Catálogo Completo"),
-        types.KeyboardButton("🕒 Últimas Subidas"),
-        types.KeyboardButton("ℹ️ Ayuda")
+        telebot.types.KeyboardButton("📁 Catálogo Completo"),
+        telebot.types.KeyboardButton("🕒 Últimas Subidas"),
+        telebot.types.KeyboardButton("ℹ️ Ayuda")
     )
     return markup
 
@@ -220,17 +220,17 @@ def crear_markup_catalogo(pagina=1):
     total = obtener_total_packs()
     total_paginas = max(1, (total + ITEMS_POR_PAGINA - 1) // ITEMS_POR_PAGINA)
     packs = obtener_packs_pagina(pagina)
-    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup = telebot.types.InlineKeyboardMarkup(row_width=1)
     
     for pack_id, titulo in packs:
-        markup.add(types.InlineKeyboardButton(f"⭐ {titulo}", callback_data=f"pack_{pack_id}"))
+        markup.add(telebot.types.InlineKeyboardButton(f"⭐ {titulo}", callback_data=f"pack_{pack_id}"))
     
     botones_nav = []
     if pagina > 1:
-        botones_nav.append(types.InlineKeyboardButton("⬅️ Anterior", callback_data=f"pag_{pagina - 1}"))
-    botones_nav.append(types.InlineKeyboardButton(f"📄 {pagina}/{total_paginas}", callback_data="noop"))
+        botones_nav.append(telebot.types.InlineKeyboardButton("⬅️ Anterior", callback_data=f"pag_{pagina - 1}"))
+    botones_nav.append(telebot.types.InlineKeyboardButton(f"📄 {pagina}/{total_paginas}", callback_data="noop"))
     if pagina < total_paginas:
-        botones_nav.append(types.InlineKeyboardButton("Siguiente ➡️", callback_data=f"pag_{pagina + 1}"))
+        botones_nav.append(telebot.types.InlineKeyboardButton("Siguiente ➡️", callback_data=f"pag_{pagina + 1}"))
     
     markup.row(*botones_nav)
     return markup, total_paginas
@@ -299,8 +299,8 @@ def callbacks(call):
         nombres_archivos = "\n".join([f"  • `{a[1]}`" for a in archivos])
         texto = f"🏷 **{titulo}**\n\n📦 **Archivos ({len(archivos)}):**\n{nombres_archivos}\n\n📋 **Descripción:**\n{descripcion}"
         
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("⬇️ Descargar Pack", callback_data=f"descargar_{pack_id}"))
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton("⬇️ Descargar Pack", callback_data=f"descargar_{pack_id}"))
         enviar_temporal(call.message.chat.id, texto, markup)
         bot.answer_callback_query(call.id)
 
@@ -316,7 +316,7 @@ def callbacks(call):
                     pass
         bot.answer_callback_query(call.id)
 
-# --- ENTRADA WEBHOOK PARA VERCEL ---
+# --- ENDPOINT WEBHOOK PARA VERCEL ---
 @app.route('/api/index', methods=['POST', 'GET'])
 def webhook():
     if request.method == 'POST':
