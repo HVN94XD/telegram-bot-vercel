@@ -98,7 +98,6 @@ def borrar_comando_usuario(message):
     except Exception:
         pass
 
-# MODIFICADO: Soporte para Topics (message_thread_id)
 def enviar_temporal(chat_id, texto, markup=None, parse_mode="Markdown", message_thread_id=None):
     try:
         kwargs = {"parse_mode": parse_mode}
@@ -360,16 +359,17 @@ def extraer_info_archivo(message):
         return message.photo[-1].file_id, "Foto", "photo"
     return None, None, None
 
-def teclado_principal(es_admin=False):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+# --- NUEVOS BOTONES FLOTANTES (INLINE) PARA EL PANEL PRINCIPAL ---
+def teclado_principal_flotante(es_admin=False):
+    markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.KeyboardButton("📁 Catálogo Completo"),
-        types.KeyboardButton("🕒 Últimas Subidas"),
-        types.KeyboardButton("🔍 Buscar Archivo"),
-        types.KeyboardButton("ℹ️ Ayuda")
+        types.InlineKeyboardButton("📁 Catálogo Completo", callback_data="menu_catalogo"),
+        types.InlineKeyboardButton("🕒 Últimas Subidas", callback_data="menu_recientes"),
+        types.InlineKeyboardButton("🔍 Buscar Archivo", callback_data="menu_buscar"),
+        types.InlineKeyboardButton("ℹ️ Ayuda", callback_data="menu_ayuda")
     )
     if es_admin:
-        markup.add(types.KeyboardButton("👥 Gestionar Miembros"))
+        markup.add(types.InlineKeyboardButton("👥 Gestionar Miembros", callback_data="menu_miembros"))
     return markup
 
 def crear_markup_catalogo(pagina=1):
@@ -389,6 +389,8 @@ def crear_markup_catalogo(pagina=1):
         botones_nav.append(types.InlineKeyboardButton("Siguiente ➡️", callback_data=f"pag_{pagina + 1}"))
     
     markup.row(*botones_nav)
+    # Botón para volver al menú principal flotante
+    markup.add(types.InlineKeyboardButton("🔙 Volver al Menú", callback_data="menu_principal"))
     return markup, total_paginas
 
 # --- MANEJADOR DE COMANDOS /START Y /HVN94 ---
@@ -407,112 +409,10 @@ def cmd_start_hvn94(message):
     es_admin = (message.from_user.id == ADMIN_ID)
     texto = (
         "👋 **¡Panel HVN94 Convocado!**\n\n"
-        "Usa los botones de abajo para navegar por el catálogo, ver las últimas subidas o buscar archivos.\n\n"
+        "Usa los botones flotantes de abajo para navegar por el catálogo, ver las últimas subidas o buscar archivos.\n\n"
         f"⏱ _Los mensajes y descargas se autodestruyen en {TIEMPO_AUTO_ELIMINAR}s._"
     )
-    enviar_temporal(message.chat.id, texto, markup=teclado_principal(es_admin), message_thread_id=thread_id)
-
-@bot.message_handler(func=lambda msg: msg.text == "📁 Catálogo Completo" or msg.text == "/list")
-def ver_catalogo(message):
-    borrar_comando_usuario(message)
-    thread_id = getattr(message, 'message_thread_id', None)
-    if not es_miembro_autorizado(message.from_user.id):
-        notificar_y_bloquear(message)
-        return
-
-    total = obtener_total_packs()
-    if total == 0:
-        enviar_temporal(message.chat.id, "📂 Aún no hay archivos registrados.", message_thread_id=thread_id)
-        return
-    markup, _ = crear_markup_catalogo(pagina=1)
-    enviar_temporal(message.chat.id, f"📂 **Catálogo Disponible** ({total} elementos):", markup, message_thread_id=thread_id)
-
-@bot.message_handler(func=lambda msg: msg.text == "🕒 Últimas Subidas" or msg.text == "/recent")
-def ver_recientes(message):
-    borrar_comando_usuario(message)
-    thread_id = getattr(message, 'message_thread_id', None)
-    if not es_miembro_autorizado(message.from_user.id):
-        notificar_y_bloquear(message)
-        return
-
-    packs = obtener_packs_pagina(pagina=1, limite=6)
-    if not packs:
-        enviar_temporal(message.chat.id, "📂 No hay archivos recientes.", message_thread_id=thread_id)
-        return
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    for pack_id, titulo in packs:
-        markup.add(types.InlineKeyboardButton(f"⭐ {titulo}", callback_data=f"pack_{pack_id}"))
-    enviar_temporal(message.chat.id, "🕒 **Últimas subidas:**", markup, message_thread_id=thread_id)
-
-@bot.message_handler(func=lambda msg: msg.text == "🔍 Buscar Archivo")
-def pedir_busqueda(message):
-    borrar_comando_usuario(message)
-    thread_id = getattr(message, 'message_thread_id', None)
-    if not es_miembro_autorizado(message.from_user.id):
-        notificar_y_bloquear(message)
-        return
-
-    msg = enviar_temporal(message.chat.id, "✍️ **Escribe el nombre o texto a buscar:**", message_thread_id=thread_id)
-    bot.register_next_step_handler(msg, procesar_busqueda)
-
-def procesar_busqueda(message):
-    borrar_comando_usuario(message)
-    thread_id = getattr(message, 'message_thread_id', None)
-    if not es_miembro_autorizado(message.from_user.id):
-        notificar_y_bloquear(message)
-        return
-
-    query = message.text.strip()
-    resultados = buscar_packs(query)
-    if not resultados:
-        enviar_temporal(message.chat.id, f"❌ No se encontró nada para: `{query}`", message_thread_id=thread_id)
-        return
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    for pack_id, titulo in resultados:
-        markup.add(types.InlineKeyboardButton(f"⭐ {titulo}", callback_data=f"pack_{pack_id}"))
-    enviar_temporal(message.chat.id, f"🔍 **Resultados para:** `{query}`", markup, message_thread_id=thread_id)
-
-@bot.message_handler(func=lambda msg: msg.text == "ℹ️ Ayuda")
-def ver_ayuda(message):
-    borrar_comando_usuario(message)
-    thread_id = getattr(message, 'message_thread_id', None)
-    if not es_miembro_autorizado(message.from_user.id):
-        notificar_y_bloquear(message)
-        return
-
-    texto = (
-        "💡 **Instrucciones:**\n\n"
-        "1. Usa los botones inferiores para abrir Catálogo, Nuevas Subidas o Buscar.\n"
-        "2. Toca cualquier pack para ver su ficha técnica.\n"
-        f"3. Los archivos y mensajes se autodestruyen automáticamente en {TIEMPO_AUTO_ELIMINAR}s."
-    )
-    enviar_temporal(message.chat.id, texto, message_thread_id=thread_id)
-
-@bot.message_handler(func=lambda msg: msg.text in ["👥 Gestionar Miembros", "/miembros"])
-def ver_miembros_admin(message):
-    borrar_comando_usuario(message)
-    thread_id = getattr(message, 'message_thread_id', None)
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    miembros = obtener_lista_miembros()
-    if not miembros:
-        enviar_temporal(message.chat.id, "📂 No hay miembros autorizados en la base de datos.", message_thread_id=thread_id)
-        return
-
-    enviar_temporal(message.chat.id, f"👥 **Miembros Registrados ({len(miembros)}):**", message_thread_id=thread_id)
-    for u_id, nom, user_n, origen, fecha in miembros:
-        alias = f"@{user_n}" if user_n != "SinAlias" else "Sin @"
-        txt_m = (
-            f"👤 **Nombre:** {nom}\n"
-            f"🔗 **Usuario:** {alias}\n"
-            f"🆔 **ID:** `{u_id}`\n"
-            f"📍 **Origen:** `{origen}`\n"
-            f"📅 **Fecha:** `{fecha}`"
-        )
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🗑️ Revocar / Eliminar Acceso", callback_data=f"admin_eliminar_u_{u_id}"))
-        enviar_temporal(message.chat.id, txt_m, markup, message_thread_id=thread_id)
+    enviar_temporal(message.chat.id, texto, markup=teclado_principal_flotante(es_admin), message_thread_id=thread_id)
 
 # --- CAPTURA DE MENSAJES Y ARCHIVOS EN GRUPOS ---
 @bot.message_handler(func=lambda m: m.chat.type in ['group', 'supergroup'], content_types=['text', 'document', 'video', 'audio', 'photo'])
@@ -536,18 +436,115 @@ def handle_channel(message):
         caption = message.caption or ""
         registrar_archivo_o_pack(f_id, f_nombre, f_tipo, caption, message.chat.id, message.message_id)
 
-# --- CALLBACKS INTERACTIVOS ---
+# --- CALLBACKS INTERACTIVOS Y MENÚS FLOTANTES ---
 @bot.callback_query_handler(func=lambda call: True)
 def callbacks(call):
     user_id = call.from_user.id
     data = call.data
-    # Detectar el thread del mensaje original del callback si existe
     thread_id = getattr(call.message, 'message_thread_id', None)
+    es_admin = (user_id == ADMIN_ID)
 
     if data == "noop":
         bot.answer_callback_query(call.id)
         return
 
+    # --- NAVEGACIÓN DEL MENÚ PRINCIPAL FLOTANTE ---
+    if data == "menu_principal":
+        texto = (
+            "👋 **¡Panel HVN94 Convocado!**\n\n"
+            "Usa los botones flotantes de abajo para navegar por el catálogo, ver las últimas subidas o buscar archivos.\n\n"
+            f"⏱ _Los mensajes y descargas se autodestruyen en {TIEMPO_AUTO_ELIMINAR}s._"
+        )
+        try:
+            bot.edit_message_text(texto, call.message.chat.id, call.message.message_id, reply_markup=teclado_principal_flotante(es_admin), parse_mode="Markdown")
+        except Exception:
+            pass
+        bot.answer_callback_query(call.id)
+        return
+
+    if data == "menu_catalogo":
+        if not es_miembro_autorizado(user_id):
+            bot.answer_callback_query(call.id, "⛔ Acceso Denegado.", show_alert=True)
+            return
+        total = obtener_total_packs()
+        if total == 0:
+            bot.answer_callback_query(call.id, "📂 Aún no hay archivos registrados.", show_alert=True)
+            return
+        markup, _ = crear_markup_catalogo(1)
+        try:
+            bot.edit_message_text(f"📂 **Catálogo Disponible** ({total} elementos):", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        except Exception:
+            pass
+        bot.answer_callback_query(call.id)
+        return
+
+    if data == "menu_recientes":
+        if not es_miembro_autorizado(user_id):
+            bot.answer_callback_query(call.id, "⛔ Acceso Denegado.", show_alert=True)
+            return
+        packs = obtener_packs_pagina(pagina=1, limite=6)
+        if not packs:
+            bot.answer_callback_query(call.id, "📂 No hay archivos recientes.", show_alert=True)
+            return
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for pack_id, titulo in packs:
+            markup.add(types.InlineKeyboardButton(f"⭐ {titulo}", callback_data=f"pack_{pack_id}"))
+        markup.add(types.InlineKeyboardButton("🔙 Volver al Menú", callback_data="menu_principal"))
+        try:
+            bot.edit_message_text("🕒 **Últimas subidas:**", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        except Exception:
+            pass
+        bot.answer_callback_query(call.id)
+        return
+
+    if data == "menu_ayuda":
+        if not es_miembro_autorizado(user_id):
+            bot.answer_callback_query(call.id, "⛔ Acceso Denegado.", show_alert=True)
+            return
+        texto = (
+            "💡 **Instrucciones:**\n\n"
+            "1. Usa los botones flotantes para abrir Catálogo, Nuevas Subidas o Buscar.\n"
+            "2. Toca cualquier pack para ver su ficha técnica.\n"
+            f"3. Los archivos y mensajes se autodestruyen automáticamente en {TIEMPO_AUTO_ELIMINAR}s."
+        )
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Volver al Menú", callback_data="menu_principal"))
+        try:
+            bot.edit_message_text(texto, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        except Exception:
+            pass
+        bot.answer_callback_query(call.id)
+        return
+
+    if data == "menu_buscar":
+        bot.answer_callback_query(call.id, "✍️ Escribe el término de búsqueda en el chat.", show_alert=True)
+        return
+
+    if data == "menu_miembros":
+        if user_id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "⛔ No autorizado.", show_alert=True)
+            return
+        miembros = obtener_lista_miembros()
+        if not miembros:
+            bot.answer_callback_query(call.id, "📂 No hay miembros autorizados.", show_alert=True)
+            return
+        # Enviamos los miembros como mensajes temporales separados para no romper el menú
+        for u_id, nom, user_n, origen, fecha in miembros:
+            alias = f"@{user_n}" if user_n != "SinAlias" else "Sin @"
+            txt_m = (
+                f"👤 **Nombre:** {nom}\n"
+                f"🔗 **Usuario:** {alias}\n"
+                f"🆔 **ID:** `{u_id}`\n"
+                f"📍 **Origen:** `{origen}`\n"
+                f"📅 **Fecha:** `{fecha}`"
+            )
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🗑️ Revocar / Eliminar Acceso", callback_data=f"admin_eliminar_u_{u_id}"))
+            enviar_temporal(call.message.chat.id, txt_m, markup, message_thread_id=thread_id)
+        bot.answer_callback_query(call.id, "👥 Lista de miembros enviada.")
+        return
+
+    # --- ACCIONES DE ADMIN (APROBAR/DENEGAR/REVOCAR) ---
     if data.startswith("aprobar_"):
         if user_id != ADMIN_ID:
             bot.answer_callback_query(call.id, "⛔ Acción no autorizada.", show_alert=True)
@@ -621,6 +618,7 @@ def callbacks(call):
         bot.answer_callback_query(call.id, "⛔ Acceso Denegado. No eres miembro activo.", show_alert=True)
         return
 
+    # Paginación
     if data.startswith("pag_"):
         pagina = int(data.replace("pag_", ""))
         markup, _ = crear_markup_catalogo(pagina=pagina)
@@ -630,6 +628,7 @@ def callbacks(call):
             pass
         bot.answer_callback_query(call.id)
 
+    # Ver detalles de Pack
     elif data.startswith("pack_"):
         pack_id = int(data.replace("pack_", ""))
         detalles = obtener_detalles_pack(pack_id)
@@ -651,15 +650,19 @@ def callbacks(call):
         
         if user_id == ADMIN_ID:
             markup.add(types.InlineKeyboardButton("🗑️ Eliminar de la Base de Datos y Grupo", callback_data=f"borrar_pack_{pack_id}"))
+        
+        markup.add(types.InlineKeyboardButton("🔙 Volver al Catálogo", callback_data="menu_catalogo"))
 
         enviar_temporal(call.message.chat.id, texto, markup, message_thread_id=thread_id)
         bot.answer_callback_query(call.id)
 
+    # Descargar Pack
     elif data.startswith("descargar_pack_"):
         pack_id = int(data.replace("descargar_pack_", ""))
         entregar_pack(call.message.chat.id, pack_id, thread_id)
         bot.answer_callback_query(call.id)
 
+    # Borrar Pack (Admin)
     elif data.startswith("borrar_pack_"):
         if user_id != ADMIN_ID:
             bot.answer_callback_query(call.id, "⛔ No autorizado.", show_alert=True)
