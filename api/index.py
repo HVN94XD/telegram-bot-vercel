@@ -113,15 +113,29 @@ def enviar_temporal(chat_id, texto, markup=None, parse_mode="Markdown", message_
         print("ERROR ENVIAR TEMPORAL:", e)
         return None
 
-# --- GESTIÓN DE ACCESOS EN TIEMPO REAL ---
+# --- REGLA ESTRICTA DE GRUPOS VÁLIDOS ---
 def registrar_grupo_en_bd(chat_id, titulo):
-    if chat_id not in GRUPOS_REGISTRADOS:
-        GRUPOS_REGISTRADOS.add(chat_id)
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR IGNORE INTO grupos_vinculados (chat_id, titulo) VALUES (?, ?)", (chat_id, titulo))
-        conn.commit()
-        conn.close()
+    # REGLA: Verificar obligatoriamente que TÚ (ADMIN_ID) estés en este grupo y seas miembro activo/admin.
+    try:
+        admin_chat_member = bot.get_chat_member(chat_id, ADMIN_ID)
+        # Si tú estás en el grupo (creador, admin, miembro o restringido, pero estás ahí)
+        if admin_chat_member.status in ['creator', 'administrator', 'member', 'restricted']:
+            if chat_id not in GRUPOS_REGISTRADOS:
+                GRUPOS_REGISTRADOS.add(chat_id)
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                cursor.execute("INSERT OR IGNORE INTO grupos_vinculados (chat_id, titulo) VALUES (?, ?)", (chat_id, titulo))
+                conn.commit()
+                conn.close()
+            return True
+    except Exception:
+        # Si la API da error (ej: el bot no puede ver miembros o tú no estás ahí), se rechaza el grupo de inmediato
+        pass
+    
+    # Si metieron al bot a un grupo donde TÚ NO ESTÁS, nos aseguramos de borrarlo de la lista si existía
+    if chat_id in GRUPOS_REGISTRADOS:
+        GRUPOS_REGISTRADOS.remove(chat_id)
+    return False
 
 def autorizar_usuario(user_id, nombre, username, origen="Manual/Admin"):
     with lock_db:
@@ -149,8 +163,15 @@ def es_miembro_autorizado(user_id):
     if not GRUPOS_REGISTRADOS:
         return False
 
+    # REGLA ESTRICTA: El usuario solo pasa si está en un grupo válido donde TÚ también estás registrado
     for grupo_id in list(GRUPOS_REGISTRADOS):
         try:
+            # Primero validamos que TÚ sigas estando en el grupo
+            yo_en_grupo = bot.get_chat_member(grupo_id, ADMIN_ID)
+            if yo_en_grupo.status not in ['creator', 'administrator', 'member', 'restricted']:
+                continue # Si tú ya no estás ahí, ese grupo queda invalidado
+
+            # Luego validamos si el usuario pertenece a ese grupo legítimo
             m = bot.get_chat_member(grupo_id, user_id)
             if m.status in ['creator', 'administrator', 'member', 'restricted']:
                 return True
@@ -183,40 +204,21 @@ def notificar_y_bloquear(message):
     texto_usuario = (
         "🚫 **ACCESO RESTRINGIDO**\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Este bot es de uso **exclusivo para miembros autorizados**.\n\n"
-        f"📩 **Tu solicitud de acceso ya ha sido enviada a {CONTACTO_ADMIN}.**\n"
-        "El administrador revisará tu perfil para habilitar tus permisos de descarga."
+        "Este bot es de uso **exclusivo para miembros autorizados** en grupos donde el administrador está presente.\n\n"
+        f"📩 **Tu acceso ha sido denegado automáticamente.**"
     )
-    markup_user = types.InlineKeyboardMarkup()
-    markup_user.add(types.InlineKeyboardButton(f"👤 Contactar a {CONTACTO_ADMIN}", url=f"https://t.me/{CONTACTO_ADMIN.replace('@', '')}"))
-    enviar_temporal(message.chat.id, texto_usuario, markup_user, message_thread_id=thread_id)
+    enviar_temporal(message.chat.id, texto_usuario, message_thread_id=thread_id)
 
-    clean_username = user.username if user.username else "none"
-    clean_nombre = nombre_completo.replace("_", " ")
-
-    markup_admin = types.InlineKeyboardMarkup(row_width=2)
-    markup_admin.add(
-        types.InlineKeyboardButton("✅ Autorizar Acceso", callback_data=f"aprobar_{req_uid}_{clean_username}_{clean_nombre}"),
-        types.InlineKeyboardButton("❌ Denegar", callback_data=f"denegar_{req_uid}")
-    )
-    if user.username:
-        markup_admin.add(types.InlineKeyboardButton("💬 Abrir Chat con Usuario", url=f"https://t.me/{user.username}"))
-
+    # Opcional: Avisarte al privado del intento de intrusión en grupo extraño
     txt_admin = (
-        "🚨 **¡NUEVA SOLICITUD DE ACCESO AL BOT!**\n"
+        "⚠️ **[ALERTA DE SEGURIDAD] INTENTO DE ACCESO NO VÁLIDO**\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 **Nombre:** {nombre_completo}\n"
-        f"🔗 **Usuario:** {username_str}\n"
-        f"🆔 **ID de Telegram:** `{req_uid}`\n"
-        f"⭐ **Telegram Premium:** {es_premium}\n"
-        f"🌐 **Idioma:** `{idioma}`\n"
-        f"🕒 **Fecha/Hora:** `{hora_actual}`\n"
-        f"📍 **Origen:** Grupo con Topics\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "¿Deseas autorizar a este usuario?"
+        f"👤 **Usuario:** {nombre_completo} ({username_str})\n"
+        f"🆔 **ID:** `{req_uid}`\n"
+        f"📍 Un usuario intentó usar el bot en un grupo o chat sin autorización o donde no estás vinculado."
     )
     try:
-        bot.send_message(ADMIN_ID, txt_admin, reply_markup=markup_admin, parse_mode="Markdown")
+        bot.send_message(ADMIN_ID, txt_admin, parse_mode="Markdown")
     except Exception:
         pass
 
@@ -399,7 +401,10 @@ def cmd_start_hvn94(message):
     thread_id = getattr(message, 'message_thread_id', None)
 
     if message.chat.type in ['group', 'supergroup']:
-        registrar_grupo_en_bd(message.chat.id, message.chat.title or "Grupo Privado")
+        # Solo se registra si TÚ estás en el grupo
+        es_grupo_valido = registrar_grupo_en_bd(message.chat.id, message.chat.title or "Grupo Privado")
+        if not es_grupo_valido and message.from_user.id != ADMIN_ID:
+            return # Ignorar por completo si es un grupo ajeno donde tú no estás
 
     if not es_miembro_autorizado(message.from_user.id):
         notificar_y_bloquear(message)
@@ -424,7 +429,6 @@ def cmd_buscar(message):
         notificar_y_bloquear(message)
         return
 
-    # Extraer el texto después de /buscar
     texto_parts = message.text.split(maxsplit=1)
     if len(texto_parts) < 2:
         enviar_temporal(message.chat.id, "⚠️ **Uso correcto:** Escribe `/buscar [nombre]`\nEjemplo: `/buscar izzi`", message_thread_id=thread_id)
@@ -447,7 +451,10 @@ def cmd_buscar(message):
 # --- CAPTURA DE MENSAJES Y ARCHIVOS EN GRUPOS ---
 @bot.message_handler(func=lambda m: m.chat.type in ['group', 'supergroup'], content_types=['text', 'document', 'video', 'audio', 'photo'])
 def capturar_grupo_exclusivo(message):
-    registrar_grupo_en_bd(message.chat.id, message.chat.title or "Grupo Privado")
+    # REGLA: Si TÚ no estás en este grupo, el bot lo ignora por completo y no guarda nada
+    es_grupo_valido = registrar_grupo_en_bd(message.chat.id, message.chat.title or "Grupo Privado")
+    if not es_grupo_valido:
+        return
 
     if message.text and message.text.lower().strip() in ["hvn94", "!hvn94", "#hvn94", "/hvn94"]:
         cmd_start_hvn94(message)
@@ -460,7 +467,9 @@ def capturar_grupo_exclusivo(message):
 
 @bot.channel_post_handler(content_types=['document', 'video', 'audio', 'photo', 'text'])
 def handle_channel(message):
-    registrar_grupo_en_bd(message.chat.id, message.chat.title or "Canal")
+    es_grupo_valido = registrar_grupo_en_bd(message.chat.id, message.chat.title or "Canal")
+    if not es_grupo_valido:
+        return
     f_id, f_nombre, f_tipo = extraer_info_archivo(message)
     if f_id:
         caption = message.caption or ""
@@ -573,77 +582,8 @@ def callbacks(call):
         bot.answer_callback_query(call.id, "👥 Lista de miembros enviada.")
         return
 
-    if data.startswith("aprobar_"):
-        if user_id != ADMIN_ID:
-            bot.answer_callback_query(call.id, "⛔ Acción no autorizada.", show_alert=True)
-            return
-
-        partes = data.split("_")
-        target_uid = int(partes[1])
-        target_user = partes[2] if partes[2] != "none" else ""
-        target_nom = "_".join(partes[3:])
-
-        autorizar_usuario(target_uid, target_nom, target_user, "Aprobado por Botón")
-        bot.answer_callback_query(call.id, "✅ Usuario Autorizado con éxito.")
-
-        try:
-            bot.send_message(
-                target_uid,
-                "🎉 **¡TU SOLICITUD DE ACCESO HA SIDO APROBADA!**\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "Ya tienes autorización para descargar configuraciones.\n\n"
-                "👉 Presiona /start para comenzar.",
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
-
-        markup_revocar = types.InlineKeyboardMarkup()
-        markup_revocar.add(types.InlineKeyboardButton("🗑️ Revocar / Eliminar Acceso", callback_data=f"admin_eliminar_u_{target_uid}"))
-        bot.edit_message_text(
-            f"✅ **USUARIO AUTORIZADO CORRECTAMENTE**\n\n"
-            f"👤 **Nombre:** {target_nom}\n"
-            f"🔗 **Usuario:** @{target_user if target_user else 'Sin @'}\n"
-            f"🆔 **ID:** `{target_uid}`\n"
-            f"📅 **Estado:** Activo",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=markup_revocar,
-            parse_mode="Markdown"
-        )
-        return
-
-    if data.startswith("denegar_"):
-        if user_id != ADMIN_ID:
-            bot.answer_callback_query(call.id, "⛔ No autorizado.", show_alert=True)
-            return
-
-        target_uid = int(data.replace("denegar_", ""))
-        bot.answer_callback_query(call.id, "❌ Solicitud Denegada.")
-        try:
-            bot.send_message(target_uid, f"🚫 **Tu solicitud de acceso ha sido rechazada.** Contacta a {CONTACTO_ADMIN}.", parse_mode="Markdown")
-        except Exception:
-            pass
-        bot.edit_message_text("❌ **Solicitud denegada y descartada.**", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
-        return
-
-    if data.startswith("admin_eliminar_u_"):
-        if user_id != ADMIN_ID:
-            bot.answer_callback_query(call.id, "⛔ No autorizado.", show_alert=True)
-            return
-
-        target_uid = int(data.replace("admin_eliminar_u_", ""))
-        eliminar_usuario_autorizado(target_uid)
-        bot.answer_callback_query(call.id, "🗑️ Acceso Revocado.")
-        try:
-            bot.send_message(target_uid, "🚫 **Tu acceso al catálogo ha sido revocado.**", parse_mode="Markdown")
-        except Exception:
-            pass
-        bot.edit_message_text("🗑️ **El acceso de este usuario ha sido revocado.**", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
-        return
-
     if not es_miembro_autorizado(user_id):
-        bot.answer_callback_query(call.id, "⛔ Acceso Denegado. No eres miembro activo.", show_alert=True)
+        bot.answer_callback_query(call.id, "⛔ Acceso Denegado. No estás en un grupo válido con el administrador.", show_alert=True)
         return
 
     if data.startswith("pag_"):
