@@ -928,43 +928,22 @@ def callbacks(call):
 # =========================================================
 
 @app.route("/", methods=["GET", "POST"])
-@app.route("/api/index", methods=["GET", "POST"])
 def webhook():
 
     if request.method == "GET":
-
         return "Bot activo correctamente en Vercel", 200
 
     try:
+        json_data = request.get_json(silent=True)
 
-        json_data = request.get_json(
-            silent=True
-        )
+        print("WEBHOOK RECIBIDO:", json_data)
 
-        print(
-            "WEBHOOK RECIBIDO:",
-            json_data
-        )
-
-        if not json_data:
-
-            return "OK", 200
-
-        update = telebot.types.Update.de_json(
-            json_data
-        )
-
-        bot.process_new_updates(
-            [update]
-        )
+        if json_data:
+            update = telebot.types.Update.de_json(json_data)
+            bot.process_new_updates([update])
 
         return "OK", 200
 
     except Exception as e:
-
-        print(
-            "ERROR WEBHOOK:",
-            repr(e)
-        )
-
+        print("ERROR WEBHOOK:", repr(e))
         return "OK", 200
