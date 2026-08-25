@@ -4,6 +4,11 @@ import sqlite3
 import threading
 from flask import Flask, request
 import telebot
+import os
+
+app = Flask(__name__)  # <--- Esto es lo que Vercel busca obligatoriamente
+
+# ... resto de tu código del bot y el webhook ...
 from telemetry import types if 'telemetry' in globals() else telebot.types
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
