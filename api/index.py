@@ -16,15 +16,12 @@ TIEMPO_AUTO_ELIMINAR = 60
 ITEMS_POR_PAGINA = 8
 # =================================================
 
-# Instancia obligatoria expuesta para Vercel
 app = Flask(__name__)
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 
 ultimo_pack_id = None
 lock_db = threading.Lock()
 GRUPOS_REGISTRADOS = set()
-
-# Base de datos SQLite temporal segura para Serverless
 DB_PATH = "/tmp/archivos.db"
 
 # --- BASE DE DATOS LOCAL (SQLite en /tmp) ---
@@ -68,7 +65,6 @@ def init_db():
     """)
     conn.commit()
 
-    # Auto-migración si faltan columnas
     cursor.execute("PRAGMA table_info(miembros_autorizados)")
     columnas = [col[1] for col in cursor.fetchall()]
     if "nombre" not in columnas:
@@ -102,12 +98,20 @@ def borrar_comando_usuario(message):
     except Exception:
         pass
 
-def enviar_temporal(chat_id, texto, markup=None, parse_mode="Markdown"):
+# MODIFICADO: Soporte para Topics (message_thread_id)
+def enviar_temporal(chat_id, texto, markup=None, parse_mode="Markdown", message_thread_id=None):
     try:
-        msg = bot.send_message(chat_id, texto, reply_markup=markup, parse_mode=parse_mode)
+        kwargs = {"parse_mode": parse_mode}
+        if markup:
+            kwargs["reply_markup"] = markup
+        if message_thread_id:
+            kwargs["message_thread_id"] = message_thread_id
+
+        msg = bot.send_message(chat_id, texto, **kwargs)
         auto_destruir_mensaje(chat_id, [msg.message_id], delay=TIEMPO_AUTO_ELIMINAR)
         return msg
-    except Exception:
+    except Exception as e:
+        print("ERROR ENVIAR TEMPORAL:", e)
         return None
 
 # --- GESTIÓN DE ACCESOS EN TIEMPO REAL ---
@@ -163,7 +167,6 @@ def obtener_lista_miembros():
     conn.close()
     return miembros
 
-# --- NOTIFICACIÓN DETALLADA AL ADMIN AL BLOQUEAR ---
 def notificar_y_bloquear(message):
     borrar_comando_usuario(message)
     user = message.from_user
@@ -176,17 +179,18 @@ def notificar_y_bloquear(message):
     es_premium = "⭐ Sí" if getattr(user, 'is_premium', False) else "No"
     hora_actual = time.strftime("%Y-%m-%d %H:%M:%S")
 
+    thread_id = getattr(message, 'message_thread_id', None)
+
     texto_usuario = (
         "🚫 **ACCESO RESTRINGIDO**\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Este bot es de uso **exclusivo para miembros autorizados**.\n\n"
         f"📩 **Tu solicitud de acceso ya ha sido enviada a {CONTACTO_ADMIN}.**\n"
-        "El administrador revisará tu perfil para habilitar tus permisos de descarga.\n\n"
-        f"👉 Si necesitas acceso inmediato, contacta a soporte."
+        "El administrador revisará tu perfil para habilitar tus permisos de descarga."
     )
     markup_user = types.InlineKeyboardMarkup()
     markup_user.add(types.InlineKeyboardButton(f"👤 Contactar a {CONTACTO_ADMIN}", url=f"https://t.me/{CONTACTO_ADMIN.replace('@', '')}"))
-    enviar_temporal(message.chat.id, texto_usuario, markup_user)
+    enviar_temporal(message.chat.id, texto_usuario, markup_user, message_thread_id=thread_id)
 
     clean_username = user.username if user.username else "none"
     clean_nombre = nombre_completo.replace("_", " ")
@@ -208,13 +212,13 @@ def notificar_y_bloquear(message):
         f"⭐ **Telegram Premium:** {es_premium}\n"
         f"🌐 **Idioma:** `{idioma}`\n"
         f"🕒 **Fecha/Hora:** `{hora_actual}`\n"
-        f"📍 **Origen:** Chat Privado con @HVN94bot\n"
+        f"📍 **Origen:** Grupo con Topics\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "¿Deseas autorizar a este usuario para que pueda explorar y descargar configs?"
+        "¿Deseas autorizar a este usuario?"
     )
     try:
         bot.send_message(ADMIN_ID, txt_admin, reply_markup=markup_admin, parse_mode="Markdown")
-    except Exception as e:
+    except Exception:
         pass
 
 # --- MANIPULACIÓN DE ARCHIVOS Y REGISTROS ---
@@ -356,7 +360,6 @@ def extraer_info_archivo(message):
         return message.photo[-1].file_id, "Foto", "photo"
     return None, None, None
 
-# --- TECLADO INFERIOR ORIGINAL (REPLY KEYBOARD) ---
 def teclado_principal(es_admin=False):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
@@ -392,6 +395,8 @@ def crear_markup_catalogo(pagina=1):
 @bot.message_handler(commands=['start', 'hvn94', 'HVN94'])
 def cmd_start_hvn94(message):
     borrar_comando_usuario(message)
+    thread_id = getattr(message, 'message_thread_id', None)
+
     if message.chat.type in ['group', 'supergroup']:
         registrar_grupo_en_bd(message.chat.id, message.chat.title or "Grupo Privado")
 
@@ -405,51 +410,54 @@ def cmd_start_hvn94(message):
         "Usa los botones de abajo para navegar por el catálogo, ver las últimas subidas o buscar archivos.\n\n"
         f"⏱ _Los mensajes y descargas se autodestruyen en {TIEMPO_AUTO_ELIMINAR}s._"
     )
-    enviar_temporal(message.chat.id, texto, markup=teclado_principal(es_admin))
+    enviar_temporal(message.chat.id, texto, markup=teclado_principal(es_admin), message_thread_id=thread_id)
 
-# --- GESTIÓN DE BOTONES DEL TECLADO INFERIOR ---
 @bot.message_handler(func=lambda msg: msg.text == "📁 Catálogo Completo" or msg.text == "/list")
 def ver_catalogo(message):
     borrar_comando_usuario(message)
+    thread_id = getattr(message, 'message_thread_id', None)
     if not es_miembro_autorizado(message.from_user.id):
         notificar_y_bloquear(message)
         return
 
     total = obtener_total_packs()
     if total == 0:
-        enviar_temporal(message.chat.id, "📂 Aún no hay archivos registrados.")
+        enviar_temporal(message.chat.id, "📂 Aún no hay archivos registrados.", message_thread_id=thread_id)
         return
     markup, _ = crear_markup_catalogo(pagina=1)
-    enviar_temporal(message.chat.id, f"📂 **Catálogo Disponible** ({total} elementos):", markup)
+    enviar_temporal(message.chat.id, f"📂 **Catálogo Disponible** ({total} elementos):", markup, message_thread_id=thread_id)
 
 @bot.message_handler(func=lambda msg: msg.text == "🕒 Últimas Subidas" or msg.text == "/recent")
 def ver_recientes(message):
     borrar_comando_usuario(message)
+    thread_id = getattr(message, 'message_thread_id', None)
     if not es_miembro_autorizado(message.from_user.id):
         notificar_y_bloquear(message)
         return
 
     packs = obtener_packs_pagina(pagina=1, limite=6)
     if not packs:
-        enviar_temporal(message.chat.id, "📂 No hay archivos recientes.")
+        enviar_temporal(message.chat.id, "📂 No hay archivos recientes.", message_thread_id=thread_id)
         return
     markup = types.InlineKeyboardMarkup(row_width=1)
     for pack_id, titulo in packs:
         markup.add(types.InlineKeyboardButton(f"⭐ {titulo}", callback_data=f"pack_{pack_id}"))
-    enviar_temporal(message.chat.id, "🕒 **Últimas subidas:**", markup)
+    enviar_temporal(message.chat.id, "🕒 **Últimas subidas:**", markup, message_thread_id=thread_id)
 
 @bot.message_handler(func=lambda msg: msg.text == "🔍 Buscar Archivo")
 def pedir_busqueda(message):
     borrar_comando_usuario(message)
+    thread_id = getattr(message, 'message_thread_id', None)
     if not es_miembro_autorizado(message.from_user.id):
         notificar_y_bloquear(message)
         return
 
-    msg = enviar_temporal(message.chat.id, "✍️ **Escribe el nombre o texto a buscar:**")
+    msg = enviar_temporal(message.chat.id, "✍️ **Escribe el nombre o texto a buscar:**", message_thread_id=thread_id)
     bot.register_next_step_handler(msg, procesar_busqueda)
 
 def procesar_busqueda(message):
     borrar_comando_usuario(message)
+    thread_id = getattr(message, 'message_thread_id', None)
     if not es_miembro_autorizado(message.from_user.id):
         notificar_y_bloquear(message)
         return
@@ -457,16 +465,17 @@ def procesar_busqueda(message):
     query = message.text.strip()
     resultados = buscar_packs(query)
     if not resultados:
-        enviar_temporal(message.chat.id, f"❌ No se encontró nada para: `{query}`")
+        enviar_temporal(message.chat.id, f"❌ No se encontró nada para: `{query}`", message_thread_id=thread_id)
         return
     markup = types.InlineKeyboardMarkup(row_width=1)
     for pack_id, titulo in resultados:
         markup.add(types.InlineKeyboardButton(f"⭐ {titulo}", callback_data=f"pack_{pack_id}"))
-    enviar_temporal(message.chat.id, f"🔍 **Resultados para:** `{query}`", markup)
+    enviar_temporal(message.chat.id, f"🔍 **Resultados para:** `{query}`", markup, message_thread_id=thread_id)
 
 @bot.message_handler(func=lambda msg: msg.text == "ℹ️ Ayuda")
 def ver_ayuda(message):
     borrar_comando_usuario(message)
+    thread_id = getattr(message, 'message_thread_id', None)
     if not es_miembro_autorizado(message.from_user.id):
         notificar_y_bloquear(message)
         return
@@ -477,20 +486,21 @@ def ver_ayuda(message):
         "2. Toca cualquier pack para ver su ficha técnica.\n"
         f"3. Los archivos y mensajes se autodestruyen automáticamente en {TIEMPO_AUTO_ELIMINAR}s."
     )
-    enviar_temporal(message.chat.id, texto)
+    enviar_temporal(message.chat.id, texto, message_thread_id=thread_id)
 
 @bot.message_handler(func=lambda msg: msg.text in ["👥 Gestionar Miembros", "/miembros"])
 def ver_miembros_admin(message):
     borrar_comando_usuario(message)
+    thread_id = getattr(message, 'message_thread_id', None)
     if message.from_user.id != ADMIN_ID:
         return
 
     miembros = obtener_lista_miembros()
     if not miembros:
-        enviar_temporal(message.chat.id, "📂 No hay miembros autorizados en la base de datos.")
+        enviar_temporal(message.chat.id, "📂 No hay miembros autorizados en la base de datos.", message_thread_id=thread_id)
         return
 
-    enviar_temporal(message.chat.id, f"👥 **Miembros Registrados ({len(miembros)}):**")
+    enviar_temporal(message.chat.id, f"👥 **Miembros Registrados ({len(miembros)}):**", message_thread_id=thread_id)
     for u_id, nom, user_n, origen, fecha in miembros:
         alias = f"@{user_n}" if user_n != "SinAlias" else "Sin @"
         txt_m = (
@@ -502,7 +512,7 @@ def ver_miembros_admin(message):
         )
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("🗑️ Revocar / Eliminar Acceso", callback_data=f"admin_eliminar_u_{u_id}"))
-        enviar_temporal(message.chat.id, txt_m, markup)
+        enviar_temporal(message.chat.id, txt_m, markup, message_thread_id=thread_id)
 
 # --- CAPTURA DE MENSAJES Y ARCHIVOS EN GRUPOS ---
 @bot.message_handler(func=lambda m: m.chat.type in ['group', 'supergroup'], content_types=['text', 'document', 'video', 'audio', 'photo'])
@@ -531,12 +541,13 @@ def handle_channel(message):
 def callbacks(call):
     user_id = call.from_user.id
     data = call.data
+    # Detectar el thread del mensaje original del callback si existe
+    thread_id = getattr(call.message, 'message_thread_id', None)
 
     if data == "noop":
         bot.answer_callback_query(call.id)
         return
 
-    # Admin aprueba acceso
     if data.startswith("aprobar_"):
         if user_id != ADMIN_ID:
             bot.answer_callback_query(call.id, "⛔ Acción no autorizada.", show_alert=True)
@@ -577,7 +588,6 @@ def callbacks(call):
         )
         return
 
-    # Admin deniega acceso
     if data.startswith("denegar_"):
         if user_id != ADMIN_ID:
             bot.answer_callback_query(call.id, "⛔ No autorizado.", show_alert=True)
@@ -592,7 +602,6 @@ def callbacks(call):
         bot.edit_message_text("❌ **Solicitud denegada y descartada.**", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
         return
 
-    # Admin revoca acceso
     if data.startswith("admin_eliminar_u_"):
         if user_id != ADMIN_ID:
             bot.answer_callback_query(call.id, "⛔ No autorizado.", show_alert=True)
@@ -608,12 +617,10 @@ def callbacks(call):
         bot.edit_message_text("🗑️ **El acceso de este usuario ha sido revocado.**", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
         return
 
-    # Validación en tiempo real para botones
     if not es_miembro_autorizado(user_id):
         bot.answer_callback_query(call.id, "⛔ Acceso Denegado. No eres miembro activo.", show_alert=True)
         return
 
-    # Paginación
     if data.startswith("pag_"):
         pagina = int(data.replace("pag_", ""))
         markup, _ = crear_markup_catalogo(pagina=pagina)
@@ -623,7 +630,6 @@ def callbacks(call):
             pass
         bot.answer_callback_query(call.id)
 
-    # Ver detalles de Pack
     elif data.startswith("pack_"):
         pack_id = int(data.replace("pack_", ""))
         detalles = obtener_detalles_pack(pack_id)
@@ -646,16 +652,14 @@ def callbacks(call):
         if user_id == ADMIN_ID:
             markup.add(types.InlineKeyboardButton("🗑️ Eliminar de la Base de Datos y Grupo", callback_data=f"borrar_pack_{pack_id}"))
 
-        enviar_temporal(call.message.chat.id, texto, markup)
+        enviar_temporal(call.message.chat.id, texto, markup, message_thread_id=thread_id)
         bot.answer_callback_query(call.id)
 
-    # Descargar Pack
     elif data.startswith("descargar_pack_"):
         pack_id = int(data.replace("descargar_pack_", ""))
-        entregar_pack(call.message.chat.id, pack_id)
+        entregar_pack(call.message.chat.id, pack_id, thread_id)
         bot.answer_callback_query(call.id)
 
-    # Borrar Pack (Admin)
     elif data.startswith("borrar_pack_"):
         if user_id != ADMIN_ID:
             bot.answer_callback_query(call.id, "⛔ No autorizado.", show_alert=True)
@@ -669,7 +673,7 @@ def callbacks(call):
         except Exception:
             pass
 
-def entregar_pack(chat_id, pack_id):
+def entregar_pack(chat_id, pack_id, thread_id=None):
     detalles = obtener_detalles_pack(pack_id)
     if not detalles:
         return
@@ -677,29 +681,36 @@ def entregar_pack(chat_id, pack_id):
     (titulo, _, _), archivos = detalles
     msg_ids = []
 
+    kwargs = {"parse_mode": "Markdown"}
+    if thread_id:
+        kwargs["message_thread_id"] = thread_id
+
     alerta = bot.send_message(
         chat_id, 
         f"⏳ Enviando `{titulo}` ({len(archivos)} archivo/s)...\n**⚠️ Se auto-eliminará en {TIEMPO_AUTO_ELIMINAR} segundos.**",
-        parse_mode="Markdown"
+        **kwargs
     )
     msg_ids.append(alerta.message_id)
 
     for f_id, _, tipo in archivos:
+        file_kwargs = {}
+        if thread_id:
+            file_kwargs["message_thread_id"] = thread_id
+
         if tipo == "document":
-            m = bot.send_document(chat_id, f_id)
+            m = bot.send_document(chat_id, f_id, **file_kwargs)
         elif tipo == "video":
-            m = bot.send_video(chat_id, f_id)
+            m = bot.send_video(chat_id, f_id, **file_kwargs)
         elif tipo == "audio":
-            m = bot.send_audio(chat_id, f_id)
+            m = bot.send_audio(chat_id, f_id, **file_kwargs)
         elif tipo == "photo":
-            m = bot.send_photo(chat_id, f_id)
+            m = bot.send_photo(chat_id, f_id, **file_kwargs)
         else:
-            m = bot.send_document(chat_id, f_id)
+            m = bot.send_document(chat_id, f_id, **file_kwargs)
         msg_ids.append(m.message_id)
 
     auto_destruir_mensaje(chat_id, msg_ids, delay=TIEMPO_AUTO_ELIMINAR)
 
-# --- ENDPOINT WEBHOOK PARA VERCEL ---
 @app.route("/api/index", methods=["GET", "POST"])
 def webhook():
     if request.method == "GET":
