@@ -8,6 +8,7 @@ from supabase import create_client, Client
 # ================= CONFIGURACIÓN =================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+STORAGE_CHAT_ID = int(os.environ.get("STORAGE_CHAT_ID", "0"))
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -87,12 +88,15 @@ def enviar_foto_temporal(chat_id, foto_url, caption, markup=None, parse_mode="Ma
 
 # --- SEGURIDAD: CONTROL DE GRUPO Y ANTI-RATA ---
 def validar_o_castigar_grupo(chat_id, titulo):
+    # Permitir si es el grupo de almacenamiento configurado
+    if STORAGE_CHAT_ID != 0 and chat_id == STORAGE_CHAT_ID:
+        return True
+
     try:
         admin_member = bot.get_chat_member(chat_id, ADMIN_ID)
         if admin_member.status in ['creator', 'administrator', 'member', 'restricted']:
             if chat_id not in GRUPOS_REGISTRADOS:
                 GRUPOS_REGISTRADOS.add(chat_id)
-                # Guardar grupo vinculado en Supabase si lo deseas, o mantenerlo en memoria
             return True
     except Exception:
         pass
@@ -116,7 +120,6 @@ def es_miembro_autorizado(user_id):
     if user_id == ADMIN_ID:
         return True
 
-    # Verificar en tabla usuarios_autorizados de Supabase
     try:
         res = supabase.table("usuarios_autorizados").select("user_id").eq("user_id", user_id).execute()
         if res.data:
@@ -124,10 +127,14 @@ def es_miembro_autorizado(user_id):
     except Exception:
         pass
 
-    if not GRUPOS_REGISTRADOS:
+    if not GRUPOS_REGISTRADOS and (STORAGE_CHAT_ID == 0):
         return False
 
-    for grupo_id in list(GRUPOS_REGISTRADOS):
+    todos_los_grupos = list(GRUPOS_REGISTRADOS)
+    if STORAGE_CHAT_ID != 0 and STORAGE_CHAT_ID not in todos_los_grupos:
+        todos_los_grupos.append(STORAGE_CHAT_ID)
+
+    for grupo_id in todos_los_grupos:
         try:
             yo = bot.get_chat_member(grupo_id, ADMIN_ID)
             if yo.status not in ['creator', 'administrator', 'member', 'restricted']:
@@ -135,7 +142,6 @@ def es_miembro_autorizado(user_id):
 
             m = bot.get_chat_member(grupo_id, user_id)
             if m.status in ['creator', 'administrator', 'member', 'restricted']:
-                # Opcional: auto-guardarlo en Supabase para futuras consultas rápidas
                 return True
         except Exception:
             continue
@@ -167,13 +173,11 @@ def registrar_archivo_o_pack(file_id, nombre_archivo, tipo, caption, chat_id, me
             titulo = limpiar_titulo(caption) or nombre_archivo
             descripcion = caption.strip()
 
-            # Buscar si ya existe un pack con el mismo título (insensible a mayúsculas/minúsculas)
             existente = supabase.table("packs").select("id").ilike("titulo", titulo).execute()
             
             if existente.data:
                 for row in existente.data:
                     old_id = row["id"]
-                    # Borrar archivos asociados anteriores de Telegram si es necesario
                     archs_ant = supabase.table("pack_archivos").select("chat_id, message_id").eq("pack_id", old_id).execute()
                     for a in archs_ant.data:
                         if a["chat_id"] and a["message_id"]:
@@ -184,7 +188,6 @@ def registrar_archivo_o_pack(file_id, nombre_archivo, tipo, caption, chat_id, me
                     supabase.table("pack_archivos").delete().eq("pack_id", old_id).execute()
                     supabase.table("packs").delete().eq("id", old_id).execute()
 
-            # Insertar nuevo pack
             nuevo_pack = supabase.table("packs").insert({"titulo": titulo, "descripcion": descripcion}).execute()
             if nuevo_pack.data:
                 pack_id = nuevo_pack.data[0]["id"]
@@ -256,7 +259,6 @@ def obtener_packs_pagina(pagina=1, limite=ITEMS_POR_PAGINA):
 
 def buscar_packs(query):
     try:
-        # Búsqueda usando or en Supabase
         res = supabase.table("packs").select("id, titulo").or_(f"titulo.ilike.%{query}%,descripcion.ilike.%{query}%").limit(15).execute()
         return [(item["id"], item["titulo"]) for item in res.data]
     except Exception:
@@ -377,6 +379,7 @@ def capturar_grupo_exclusivo(message):
         cmd_start_hvn94(message)
         return
 
+    # Si se configura un STORAGE_CHAT_ID específico, capturamos solo de ahí o de los grupos permitidos
     f_id, f_nombre, f_tipo = extraer_info_archivo(message)
     if f_id:
         caption = message.caption or ""
