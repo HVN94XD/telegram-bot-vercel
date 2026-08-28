@@ -1,21 +1,23 @@
 import os
 import re
-import sqlite3
-import threading
-import time
 from flask import Flask, request
 import telebot
 from telebot import types
+from supabase import create_client, Client
 
 # ================= CONFIGURACIÓN =================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 CONTACTO_ADMIN = "@HVN94"
-TIEMPO_AUTO_ELIMINAR = 30  # Reducido a 30 segundos
+TIEMPO_AUTO_ELIMINAR = 30  
 ITEMS_POR_PAGINA = 8
 
-# URL o file_id de tu imagen de bienvenida
 WELCOME_IMAGE_URL = "https://6a8d8d79aeeb5e92d6b686c4.imgix.net/sandbox/magnific_quiero-un-fondo-de-1000-x_xSJ0dLcjfW.jpg"
 
 BIOGRAFIA_TEXTO = (
@@ -33,54 +35,20 @@ app = Flask(__name__)
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 
 ultimo_pack_id = None
-lock_db = threading.Lock()
 GRUPOS_REGISTRADOS = set()
-DB_PATH = "/tmp/archivos.db"
-
-# --- BASE DE DATOS LOCAL (/tmp) ---
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS packs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            titulo TEXT,
-            descripcion TEXT,
-            fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS pack_archivos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pack_id INTEGER,
-            file_id TEXT,
-            nombre_archivo TEXT,
-            tipo TEXT,
-            chat_id INTEGER,
-            message_id INTEGER,
-            FOREIGN KEY (pack_id) REFERENCES packs(id) ON DELETE CASCADE
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS grupos_vinculados (
-            chat_id INTEGER PRIMARY KEY,
-            titulo TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-init_db()
 
 # --- AUTODESTRUCCIÓN ---
 def auto_destruir_mensaje(chat_id, message_ids, delay=30):
     def tarea():
+        import time
+        import threading
         time.sleep(delay)
         for msg_id in message_ids:
             try:
                 bot.delete_message(chat_id, msg_id)
             except Exception:
                 pass
+    import threading
     threading.Thread(target=tarea, daemon=True).start()
 
 def borrar_comando_usuario(message):
@@ -115,7 +83,6 @@ def enviar_foto_temporal(chat_id, foto_url, caption, markup=None, parse_mode="Ma
         auto_destruir_mensaje(chat_id, [msg.message_id], delay=TIEMPO_AUTO_ELIMINAR)
         return msg
     except Exception:
-        # Fallback a texto si la URL de la imagen falla
         return enviar_temporal(chat_id, caption, markup, parse_mode, message_thread_id)
 
 # --- SEGURIDAD: CONTROL DE GRUPO Y ANTI-RATA ---
@@ -125,16 +92,11 @@ def validar_o_castigar_grupo(chat_id, titulo):
         if admin_member.status in ['creator', 'administrator', 'member', 'restricted']:
             if chat_id not in GRUPOS_REGISTRADOS:
                 GRUPOS_REGISTRADOS.add(chat_id)
-                conn = sqlite3.connect(DB_PATH)
-                cursor = conn.cursor()
-                cursor.execute("INSERT OR IGNORE INTO grupos_vinculados (chat_id, titulo) VALUES (?, ?)", (chat_id, titulo))
-                conn.commit()
-                conn.close()
+                # Guardar grupo vinculado en Supabase si lo deseas, o mantenerlo en memoria
             return True
     except Exception:
         pass
 
-    # SI TÚ NO ESTÁS EN EL GRUPO: SPAM Y SALIDA
     try:
         alerta_rata = (
             "🚨 **RATA DETECTADA | ACCESO ILEGAL** 🚨\n"
@@ -154,6 +116,14 @@ def es_miembro_autorizado(user_id):
     if user_id == ADMIN_ID:
         return True
 
+    # Verificar en tabla usuarios_autorizados de Supabase
+    try:
+        res = supabase.table("usuarios_autorizados").select("user_id").eq("user_id", user_id).execute()
+        if res.data:
+            return True
+    except Exception:
+        pass
+
     if not GRUPOS_REGISTRADOS:
         return False
 
@@ -165,12 +135,13 @@ def es_miembro_autorizado(user_id):
 
             m = bot.get_chat_member(grupo_id, user_id)
             if m.status in ['creator', 'administrator', 'member', 'restricted']:
+                # Opcional: auto-guardarlo en Supabase para futuras consultas rápidas
                 return True
         except Exception:
             continue
     return False
 
-# --- GESTIÓN DE ARCHIVOS ---
+# --- GESTIÓN DE ARCHIVOS CON SUPABASE ---
 def limpiar_titulo(texto):
     if not texto:
         return None
@@ -189,114 +160,121 @@ def limpiar_titulo(texto):
 
 def registrar_archivo_o_pack(file_id, nombre_archivo, tipo, caption, chat_id, message_id):
     global ultimo_pack_id
-    with lock_db:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        tiene_caption = bool(caption and len(caption.strip()) > 5)
+    tiene_caption = bool(caption and len(caption.strip()) > 5)
 
+    try:
         if tiene_caption:
             titulo = limpiar_titulo(caption) or nombre_archivo
             descripcion = caption.strip()
 
-            cursor.execute("SELECT id FROM packs WHERE LOWER(titulo) = LOWER(?)", (titulo,))
-            existentes = cursor.fetchall()
-            for row in existentes:
-                old_id = row[0]
-                cursor.execute("SELECT chat_id, message_id FROM pack_archivos WHERE pack_id = ?", (old_id,))
-                for c_id, m_id in cursor.fetchall():
-                    if c_id and m_id:
-                        try:
-                            bot.delete_message(c_id, m_id)
-                        except Exception:
-                            pass
-                cursor.execute("DELETE FROM pack_archivos WHERE pack_id = ?", (old_id,))
-                cursor.execute("DELETE FROM packs WHERE id = ?", (old_id,))
+            # Buscar si ya existe un pack con el mismo título (insensible a mayúsculas/minúsculas)
+            existente = supabase.table("packs").select("id").ilike("titulo", titulo).execute()
+            
+            if existente.data:
+                for row in existente.data:
+                    old_id = row["id"]
+                    # Borrar archivos asociados anteriores de Telegram si es necesario
+                    archs_ant = supabase.table("pack_archivos").select("chat_id, message_id").eq("pack_id", old_id).execute()
+                    for a in archs_ant.data:
+                        if a["chat_id"] and a["message_id"]:
+                            try:
+                                bot.delete_message(a["chat_id"], a["message_id"])
+                            except Exception:
+                                pass
+                    supabase.table("pack_archivos").delete().eq("pack_id", old_id).execute()
+                    supabase.table("packs").delete().eq("id", old_id).execute()
 
-            cursor.execute("INSERT INTO packs (titulo, descripcion) VALUES (?, ?)", (titulo, descripcion))
-            pack_id = cursor.lastrowid
-            ultimo_pack_id = pack_id
+            # Insertar nuevo pack
+            nuevo_pack = supabase.table("packs").insert({"titulo": titulo, "descripcion": descripcion}).execute()
+            if nuevo_pack.data:
+                pack_id = nuevo_pack.data[0]["id"]
+                ultimo_pack_id = pack_id
 
-            cursor.execute("""
-                INSERT INTO pack_archivos (pack_id, file_id, nombre_archivo, tipo, chat_id, message_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (pack_id, file_id, nombre_archivo, tipo, chat_id, message_id))
+                supabase.table("pack_archivos").insert({
+                    "pack_id": pack_id,
+                    "file_id": file_id,
+                    "nombre_archivo": nombre_archivo,
+                    "tipo": tipo,
+                    "chat_id": chat_id,
+                    "message_id": message_id
+                }).execute()
         else:
             if ultimo_pack_id is not None:
-                cursor.execute("""
-                    INSERT INTO pack_archivos (pack_id, file_id, nombre_archivo, tipo, chat_id, message_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (ultimo_pack_id, file_id, nombre_archivo, tipo, chat_id, message_id))
+                supabase.table("pack_archivos").insert({
+                    "pack_id": ultimo_pack_id,
+                    "file_id": file_id,
+                    "nombre_archivo": nombre_archivo,
+                    "tipo": tipo,
+                    "chat_id": chat_id,
+                    "message_id": message_id
+                }).execute()
             else:
                 titulo = nombre_archivo
-                cursor.execute("INSERT INTO packs (titulo, descripcion) VALUES (?, ?)", (titulo, "Sin descripción"))
-                pack_id = cursor.lastrowid
-                ultimo_pack_id = pack_id
-                cursor.execute("""
-                    INSERT INTO pack_archivos (pack_id, file_id, nombre_archivo, tipo, chat_id, message_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (pack_id, file_id, nombre_archivo, tipo, chat_id, message_id))
-
-        conn.commit()
-        conn.close()
+                nuevo_pack = supabase.table("packs").insert({"titulo": titulo, "descripcion": "Sin descripción"}).execute()
+                if nuevo_pack.data:
+                    pack_id = nuevo_pack.data[0]["id"]
+                    ultimo_pack_id = pack_id
+                    supabase.table("pack_archivos").insert({
+                        "pack_id": pack_id,
+                        "file_id": file_id,
+                        "nombre_archivo": nombre_archivo,
+                        "tipo": tipo,
+                        "chat_id": chat_id,
+                        "message_id": message_id
+                    }).execute()
+    except Exception as e:
+        print(f"Error al registrar en Supabase: {e}")
 
 def eliminar_pack_manual(pack_id):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT chat_id, message_id FROM pack_archivos WHERE pack_id = ?", (pack_id,))
-    for c_id, m_id in cursor.fetchall():
-        if c_id and m_id:
-            try:
-                bot.delete_message(c_id, m_id)
-            except Exception:
-                pass
-    cursor.execute("DELETE FROM pack_archivos WHERE pack_id = ?", (pack_id,))
-    cursor.execute("DELETE FROM packs WHERE id = ?", (pack_id,))
-    conn.commit()
-    conn.close()
+    try:
+        archs = supabase.table("pack_archivos").select("chat_id, message_id").eq("pack_id", pack_id).execute()
+        for a in archs.data:
+            if a["chat_id"] and a["message_id"]:
+                try:
+                    bot.delete_message(a["chat_id"], a["message_id"])
+                except Exception:
+                    pass
+        supabase.table("pack_archivos").delete().eq("pack_id", pack_id).execute()
+        supabase.table("packs").delete().eq("id", pack_id).execute()
+    except Exception as e:
+        print(f"Error al eliminar en Supabase: {e}")
 
 def obtener_total_packs():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM packs")
-    total = cursor.fetchone()[0]
-    conn.close()
-    return total
+    try:
+        res = supabase.table("packs").select("id", count="exact").execute()
+        return res.count if res.count is not None else 0
+    except Exception:
+        return 0
 
 def obtener_packs_pagina(pagina=1, limite=ITEMS_POR_PAGINA):
     offset = (pagina - 1) * limite
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, titulo FROM packs ORDER BY id DESC LIMIT ? OFFSET ?", (limite, offset))
-    res = cursor.fetchall()
-    conn.close()
-    return res
+    try:
+        res = supabase.table("packs").select("id, titulo").order("id", desc=True).range(offset, offset + limite - 1).execute()
+        return [(item["id"], item["titulo"]) for item in res.data]
+    except Exception:
+        return []
 
 def buscar_packs(query):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT DISTINCT p.id, p.titulo 
-        FROM packs p
-        LEFT JOIN pack_archivos a ON p.id = a.pack_id
-        WHERE p.titulo LIKE ? OR p.descripcion LIKE ? OR a.nombre_archivo LIKE ?
-        LIMIT 15
-    """, (f"%{query}%", f"%{query}%", f"%{query}%"))
-    res = cursor.fetchall()
-    conn.close()
-    return res
+    try:
+        # Búsqueda usando or en Supabase
+        res = supabase.table("packs").select("id, titulo").or_(f"titulo.ilike.%{query}%,descripcion.ilike.%{query}%").limit(15).execute()
+        return [(item["id"], item["titulo"]) for item in res.data]
+    except Exception:
+        return []
 
 def obtener_detalles_pack(pack_id):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT titulo, descripcion, fecha FROM packs WHERE id = ?", (pack_id,))
-    pack = cursor.fetchone()
-    if not pack:
-        conn.close()
+    try:
+        pack_res = supabase.table("packs").select("titulo, descripcion, fecha").eq("id", pack_id).execute()
+        if not pack_res.data:
+            return None
+        pack = pack_res.data[0]
+        
+        arch_res = supabase.table("pack_archivos").select("file_id, nombre_archivo, tipo").eq("pack_id", pack_id).execute()
+        archivos = [(a["file_id"], a["nombre_archivo"], a["tipo"]) for a in arch_res.data]
+        
+        return (pack["titulo"], pack["descripcion"], pack["fecha"]), archivos
+    except Exception:
         return None
-    cursor.execute("SELECT file_id, nombre_archivo, tipo FROM pack_archivos WHERE pack_id = ?", (pack_id,))
-    archivos = cursor.fetchall()
-    conn.close()
-    return pack, archivos
 
 def extraer_info_archivo(message):
     if message.document:
@@ -577,7 +555,7 @@ def entregar_pack(chat_id, pack_id, thread_id=None):
 @app.route("/api/index", methods=["GET", "POST"])
 def webhook():
     if request.method == "GET":
-        return "Bot activo correctamente en Vercel", 200
+        return "Bot activo correctamente en Vercel con Supabase", 200
 
     try:
         json_data = request.get_json(silent=True)
